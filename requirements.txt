@@ -1,0 +1,25 @@
+# AIR OS V01 — Python 3.12 / 3.13 on Windows 10/11
+opencv-python>=4.9
+
+# Any modern mediapipe works: AIR OS supports both the new tasks API
+# (mediapipe >= 0.10.21, the only line with Python 3.13 wheels) and the
+# legacy solutions API on older versions.
+mediapipe>=0.10.14
+
+pyautogui>=0.9.54
+pynput>=1.7.6
+keyboard>=0.13.5
+numpy>=1.26
+customtkinter>=5.2.2
+pillow>=10.2
+SpeechRecognition>=3.10
+
+# Voice capture backends: PyAudio has no prebuilt wheel on Python 3.13,
+# so it is only installed where wheels exist; sounddevice ships wheels
+# everywhere and is used automatically as the fallback.
+PyAudio>=0.2.14 ; python_version < "3.13"
+sounddevice>=0.4.6
+
+pycaw>=20240210 ; sys_platform == "win32"
+comtypes>=1.2 ; sys_platform == "win32"
+psutil>=5.9
