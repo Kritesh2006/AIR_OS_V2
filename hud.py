@@ -1,22 +1,12 @@
-"""
-hud.py — Main window and floating HUD for AIR OS V01.
+"""AIR OS Control Panel.
 
-Layout:
-  ┌──────────────────────────────────────────────┐
-  │ [Live camera preview, top-left]  │  STATUS   │
-  │  (hand landmarks drawn on it)    │  Camera   │
-  │                                  │  Mic      │
-  │  [Hide/Show Preview]             │  Gesture  │
-  │                                  │  Voice    │
-  │                                  │  FPS      │
-  │                                  │  Gesture  │
-  │                                  │  Action   │
-  │  Errors bar (readable, wraps)               │
-  └──────────────────────────────────────────────┘
-
-Also owns the dangerous-action confirmation overlay
-(voice "shutdown" etc. → Confirm / Cancel; a quick FIST also cancels).
+Phase 1 separates the Tk application root from the visible Control Panel so
+minimizing the panel never hides the always-on-top AirPod.  The panel remains
+a normal taskbar window; X requests application shutdown through ``on_close``
+and this class never destroys Tk by itself.
 """
+
+from __future__ import annotations
 
 import tkinter as tk
 
@@ -27,23 +17,8 @@ except ImportError:
     ctk = None
     CTK_AVAILABLE = False
 
-try:
-    from PIL import Image, ImageTk
-    PIL_AVAILABLE = True
-except ImportError:
-    Image = ImageTk = None
-    PIL_AVAILABLE = False
-
-try:
-    import cv2
-    CV2_AVAILABLE = True
-except ImportError:
-    cv2 = None
-    CV2_AVAILABLE = False
-
 from settings import settings
 
-# Palette — near-black glass with violet accent.
 BG = "#0b0d13"
 PANEL = "#12151f"
 BORDER = "#262c3d"
@@ -56,33 +31,43 @@ WARN = "#fbbf24"
 
 
 class HUD:
-    """Main application window + status HUD + confirmation overlay."""
+    """Visible Control Panel plus legacy dangerous-action confirmation."""
 
     def __init__(self):
         if CTK_AVAILABLE:
             ctk.set_appearance_mode("dark")
             self.root = ctk.CTk()
+            self.root.withdraw()
+            self.panel = ctk.CTkToplevel(self.root)
         else:
             self.root = tk.Tk()
-            self.root.configure(bg=BG)
-        self.root.title("AIR OS V01")
-        self.root.geometry("880x560+60+60")
-        self.root.minsize(720, 480)
-        self.root.attributes("-topmost", True)
+            self.root.withdraw()
+            self.panel = tk.Toplevel(self.root)
+            self.panel.configure(bg=BG)
+
+        self.panel.title("AIR OS V2")
+        self.panel.geometry("760x500+60+60")
+        self.panel.minsize(660, 430)
+        # Deliberately NOT topmost: this is a normal minimizable panel.
         try:
-            self.root.attributes("-alpha", settings.hud_opacity)
+            self.panel.attributes("-alpha", settings.hud_opacity)
         except Exception:
             pass
 
-        self._preview_visible = settings.show_preview
-        self._preview_photo = None  # keep reference or Tk garbage-collects it
+        self._preview_visible = bool(settings.show_preview)
         self._status_labels = {}
+        self._errors = []
         self._overlay = None
         self._overlay_action = None
-        self.on_close = None  # set by main.py
+        self.on_close = None
+        self.on_show_air_hud = None
 
         self._build_layout()
-        self.root.protocol("WM_DELETE_WINDOW", self._handle_close)
+        self.panel.protocol("WM_DELETE_WINDOW", self._handle_close)
+        try:
+            self.panel.deiconify()
+        except Exception:
+            pass
 
     # ------------------------------------------------------------------ #
     def _frame(self, parent, **kw):
@@ -107,74 +92,70 @@ class HUD:
         return tk.Button(parent, text=text, command=command, bg=ACCENT,
                          fg="white", relief="flat", font=("Segoe UI", 11))
 
-    # ------------------------------------------------------------------ #
     def _build_layout(self):
-        root = self.root
-        root.grid_columnconfigure(0, weight=3)
-        root.grid_columnconfigure(1, weight=2)
-        root.grid_rowconfigure(0, weight=1)
+        panel = self.panel
+        panel.grid_columnconfigure(0, weight=2)
+        panel.grid_columnconfigure(1, weight=3)
+        panel.grid_rowconfigure(0, weight=1)
 
-        # ---- Left: camera preview (top-left of the window) ------------
-        left = self._frame(root)
+        # Left: Pod controls. The large V1 camera view moved to AirPod.
+        left = self._frame(panel)
         left.grid(row=0, column=0, sticky="nsew", padx=(14, 7), pady=(14, 7))
-        left.grid_rowconfigure(1, weight=1)
         left.grid_columnconfigure(0, weight=1)
 
-        self._label(left, "  LIVE PREVIEW", size=12, color=DIM,
-                    bold=True).grid(row=0, column=0, sticky="w",
-                                    padx=10, pady=(10, 4))
-        # Plain tk.Label is the fastest way to blit video frames.
-        self.preview_label = tk.Label(left, bg="#05060a",
-                                      text="Starting camera…", fg=DIM,
-                                      font=("Segoe UI", 12))
-        self.preview_label.grid(row=1, column=0, sticky="nsew",
-                                padx=10, pady=4)
-        self.preview_btn = self._button(left, "Hide preview",
-                                        self.toggle_preview)
-        self.preview_btn.grid(row=2, column=0, sticky="w",
-                              padx=10, pady=(4, 10))
-        # V2: restore the mini HUD if it was hidden (gesture also works).
-        self.on_show_air_hud = None
-        air_btn = self._button(left, "AIR HUD",
-                               lambda: self.on_show_air_hud and
-                               self.on_show_air_hud())
-        air_btn.grid(row=2, column=0, sticky="e", padx=10, pady=(4, 10))
+        self._label(left, "AIR POD", size=15, color=TEXT, bold=True).grid(
+            row=0, column=0, sticky="w", padx=14, pady=(16, 6))
+        self._label(
+            left,
+            "Live camera + AIR status now stay in the small top-left Pod.\n"
+            "You can minimize this Control Panel and AIR keeps running.",
+            size=11, color=DIM).grid(row=1, column=0, sticky="nw",
+                                     padx=14, pady=(0, 14))
 
-        # ---- Right: floating status HUD --------------------------------
-        right = self._frame(root)
+        self.preview_btn = self._button(
+            left, "Hide Pod preview" if self._preview_visible
+            else "Show Pod preview", self.toggle_preview)
+        self.preview_btn.grid(row=2, column=0, sticky="ew", padx=14, pady=5)
+
+        pod_btn = self._button(
+            left, "Show AIR Pod",
+            lambda: self.on_show_air_hud and self.on_show_air_hud())
+        pod_btn.grid(row=3, column=0, sticky="ew", padx=14, pady=5)
+
+        self._label(left, "Tip: minimizing this window does not pause gestures.",
+                    size=10, color=DIM).grid(row=4, column=0, sticky="sw",
+                                             padx=14, pady=(18, 12))
+
+        # Right: existing status dashboard.
+        right = self._frame(panel)
         right.grid(row=0, column=1, sticky="nsew", padx=(7, 14), pady=(14, 7))
         right.grid_columnconfigure(1, weight=1)
 
-        self._label(right, "  AIR OS V01", size=16, color=TEXT, bold=True)\
-            .grid(row=0, column=0, columnspan=2, sticky="w",
-                  padx=10, pady=(12, 2))
-        self._label(right, "  gesture + voice control layer", size=11,
+        self._label(right, "AIR OS V2", size=16, color=TEXT, bold=True).grid(
+            row=0, column=0, columnspan=2, sticky="w", padx=12,
+            pady=(14, 2))
+        self._label(right, "gesture + voice control layer", size=11,
                     color=DIM).grid(row=1, column=0, columnspan=2,
-                                    sticky="w", padx=10, pady=(0, 10))
+                                    sticky="w", padx=12, pady=(0, 10))
 
         rows = [("camera", "Camera"), ("mic", "Microphone"),
                 ("gesture", "Gestures"), ("voice", "Voice"),
                 ("fps", "FPS"), ("cur_gesture", "Current gesture"),
                 ("action", "Last action"), ("heard", "Heard")]
         for i, (key, title) in enumerate(rows, start=2):
-            self._label(right, f"{title}", size=12, color=DIM)\
-                .grid(row=i, column=0, sticky="w", padx=(14, 6), pady=3)
+            self._label(right, title, size=12, color=DIM).grid(
+                row=i, column=0, sticky="w", padx=(14, 6), pady=3)
             val = self._label(right, "—", size=12, color=TEXT, bold=True)
             val.grid(row=i, column=1, sticky="w", padx=6, pady=3)
             self._status_labels[key] = val
 
-        # ---- Bottom: error bar ------------------------------------------
-        errbar = self._frame(root)
+        errbar = self._frame(panel)
         errbar.grid(row=1, column=0, columnspan=2, sticky="ew",
                     padx=14, pady=(7, 14))
         errbar.grid_columnconfigure(0, weight=1)
-        self.error_label = self._label(errbar, "No errors.", size=11,
-                                       color=DIM)
+        self.error_label = self._label(errbar, "No errors.", size=11, color=DIM)
         self.error_label.grid(row=0, column=0, sticky="w", padx=12, pady=8)
 
-    # ------------------------------------------------------------------ #
-    # Status updates — all safe to call from the main (Tk) thread only.
-    # main.py marshals background-thread updates via root.after().
     # ------------------------------------------------------------------ #
     def set_status(self, key, text, good=None):
         lbl = self._status_labels.get(key)
@@ -190,12 +171,8 @@ class HUD:
             pass
 
     def set_error(self, text):
-        """Show an error in the bottom bar. Errors accumulate (last 3
-        are shown) so a new minor error never hides an older one."""
         try:
             if text:
-                if not hasattr(self, "_errors"):
-                    self._errors = []
                 if text not in self._errors:
                     self._errors.append(text)
                     self._errors = self._errors[-3:]
@@ -213,42 +190,27 @@ class HUD:
         except Exception:
             pass
 
+    # Kept as a compatibility no-op while main.py moves preview rendering to
+    # AirPod. New Phase 1 integration must call AirPod.render(snapshot).
     def update_preview(self, frame_bgr):
-        """Blit a BGR frame into the preview label (main thread only)."""
-        if not self._preview_visible or frame_bgr is None:
-            return
-        if not (PIL_AVAILABLE and CV2_AVAILABLE):
-            return
-        try:
-            w = max(self.preview_label.winfo_width(), 160)
-            h = max(self.preview_label.winfo_height(), 120)
-            fh, fw = frame_bgr.shape[:2]
-            scale = min(w / fw, h / fh)
-            frame = cv2.resize(frame_bgr, (int(fw * scale), int(fh * scale)))
-            rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
-            img = Image.fromarray(rgb)
-            self._preview_photo = ImageTk.PhotoImage(img)
-            self.preview_label.configure(image=self._preview_photo, text="")
-        except Exception:
-            pass  # a bad frame must never crash the UI
+        return None
 
     def toggle_preview(self):
         self._preview_visible = not self._preview_visible
         settings.set("show_preview", self._preview_visible)
         settings.save()
-        if self._preview_visible:
-            self.preview_btn.configure(text="Hide preview")
-        else:
-            self.preview_btn.configure(text="Show preview")
-            self.preview_label.configure(image="", text="Preview hidden")
-            self._preview_photo = None
+        try:
+            self.preview_btn.configure(
+                text="Hide Pod preview" if self._preview_visible
+                else "Show Pod preview")
+        except Exception:
+            pass
 
     # ------------------------------------------------------------------ #
-    # Confirmation overlay for dangerous actions.
+    # Legacy confirmation popup for voice/system actions.
     # ------------------------------------------------------------------ #
     def show_confirmation(self, label, action_fn):
-        """Ask the user to confirm a dangerous action (shutdown etc.)."""
-        self.close_overlay()  # only one at a time
+        self.close_overlay()
         self._overlay_action = action_fn
 
         Toplevel = ctk.CTkToplevel if CTK_AVAILABLE else tk.Toplevel
@@ -268,12 +230,14 @@ class HUD:
 
         row = self._frame(ov)
         row.pack(pady=12)
-        self._button(row, "Confirm", self._confirm_overlay)\
-            .grid(row=0, column=0, padx=8)
+        self._button(row, "Confirm", self._confirm_overlay).grid(
+            row=0, column=0, padx=8)
         cancel = self._button(row, "Cancel", self.close_overlay)
         try:
-            cancel.configure(fg_color="#374151", hover_color="#4b5563") \
-                if CTK_AVAILABLE else cancel.configure(bg="#374151")
+            if CTK_AVAILABLE:
+                cancel.configure(fg_color="#374151", hover_color="#4b5563")
+            else:
+                cancel.configure(bg="#374151")
         except Exception:
             pass
         cancel.grid(row=0, column=1, padx=8)
@@ -291,7 +255,6 @@ class HUD:
                 self.set_error(f"Action failed: {exc}")
 
     def close_overlay(self):
-        """Dismiss the confirmation dialog (also triggered by FIST)."""
         if self._overlay is not None:
             try:
                 self._overlay.destroy()
@@ -306,12 +269,9 @@ class HUD:
 
     # ------------------------------------------------------------------ #
     def _handle_close(self):
+        """Request shutdown. AirOS owns final destruction of root/windows."""
         if self.on_close:
             self.on_close()
-        try:
-            self.root.destroy()
-        except Exception:
-            pass
 
     def run(self):
         self.root.mainloop()
