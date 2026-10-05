@@ -36,6 +36,8 @@ class CameraManager:
         self._running = False
         self._lock = threading.Lock()
         self._frame = None
+        self._ts_ms = 0     # monotonic capture time of _frame
+        self._seq = 0       # increments once per captured frame
         self.available = False
         self.error = None  # human-readable error string, shown in HUD
 
@@ -84,11 +86,15 @@ class CameraManager:
                 ok, frame = False, None
 
             if ok and frame is not None:
+                # Stamp as close to acquisition as possible.
+                ts_ms = int(time.monotonic() * 1000)
                 fail_streak = 0
                 if settings.mirror_camera:
                     frame = cv2.flip(frame, 1)
                 with self._lock:
                     self._frame = frame
+                    self._ts_ms = ts_ms
+                    self._seq += 1
             else:
                 fail_streak += 1
                 if fail_streak > 60:
@@ -106,6 +112,15 @@ class CameraManager:
             if self._frame is None:
                 return False, None
             return True, self._frame.copy()
+
+    def read_latest(self):
+        """Return (ok, frame, ts_ms, seq) for the newest frame.
+        `seq` changes once per captured frame, so callers can skip a
+        frame they already processed. The frame is a private copy."""
+        with self._lock:
+            if self._frame is None:
+                return False, None, 0, self._seq
+            return True, self._frame.copy(), self._ts_ms, self._seq
 
     def stop(self):
         self._running = False

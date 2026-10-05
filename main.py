@@ -2,13 +2,17 @@
 main.py — AIR OS V01 entry point.
 
 Boot order (all automatic, no Start button):
-  1. Build the HUD window.
+  1. Windows process setup (DPI), then build the HUD window.
   2. Start the camera thread          → limited mode if it fails
   3. Detect + start the microphone    → limited mode if it fails
-  4. Start hand tracking + gestures   → runs off the camera frames
+  4. Start the SensorWorker thread    → hand tracking + gestures
   5. Start the always-on voice loop
-  6. Enter the UI loop; a ~30 FPS tick pulls frames, runs tracking,
-     feeds the gesture engine, and refreshes the HUD.
+  6. Enter the UI loop; every ~16 ms the Tk thread drains UI events
+     and renders the newest worker snapshot.
+
+Threading (see docs/ARCHITECTURE.md): only the Tk main thread touches
+widgets. Other threads talk to it through EventQueue / LatestState and
+to the SensorWorker through CommandQueue.
 
 Everything hardware-related is wrapped so a missing camera or mic
 shows a readable error in the HUD instead of crashing.
@@ -17,10 +21,14 @@ Run with:  python main.py
 """
 
 import sys
+import threading
+import time
 import traceback
 
 from settings import settings
-from utils import FPSCounter
+from channels import (CommandKind, CommandQueue, EventKind, EventQueue,
+                      LatestState)
+from sensor_worker import PassthroughRouter, SensorWorker
 
 from camera import CameraManager
 from microphone import MicrophoneManager
@@ -35,16 +43,44 @@ from hud import HUD
 from air_hud import AirHUD
 from system_monitor import SystemMonitor
 
-TICK_MS = 15  # UI loop interval (~capped by camera FPS anyway)
+try:
+    import cv2
+except ImportError:
+    cv2 = None
+
+try:
+    from win_windows import configure_windows_process
+except ImportError:
+    def configure_windows_process():
+        return 1.0
+
+POLL_MS = 16            # Tk-side poll of events + newest snapshot
+SHUTDOWN_DEADLINE_S = 3.0
 
 
 class AirOS:
     """Wires every subsystem together and runs the main loop."""
 
     def __init__(self):
+        # ---- Thread channels (see channels.py) -------------------------
+        self.state = LatestState()
+        self.events = EventQueue()
+        self.commands = CommandQueue()
+
+        # ---- Windows process setup BEFORE any Tk object exists ---------
+        try:
+            self.ui_scale = configure_windows_process()
+        except Exception:
+            traceback.print_exc()
+            self.ui_scale = 1.0
+
         # ---- UI first, so every error has somewhere to be shown -------
         self.hud = HUD()
-        self.hud.on_close = self.shutdown
+        self.hud.on_close = self._request_shutdown
+        # X on the Control Panel = quit, but without blocking Tk while
+        # the worker stops (see _request_shutdown).
+        panel = getattr(self.hud, "panel", self.hud.root)
+        panel.protocol("WM_DELETE_WINDOW", self._request_shutdown)
         # V2: the small always-on-top communication HUD (top-left).
         self.air_hud = AirHUD(self.hud.root)
         self.hud.on_show_air_hud = self.air_hud.show
@@ -61,11 +97,12 @@ class AirOS:
         self.tracker = HandTracker()
 
         # ---- Engines ----------------------------------------------------
+        # The gesture engine runs on the SensorWorker thread, so every
+        # UI-facing callback goes through _ui(). The current gesture
+        # label travels in the worker snapshot instead of a callback.
         self.gestures = GestureEngine(
             self.mouse, self.keyboard, self.system,
             callbacks={
-                "on_gesture": lambda g: self._ui(
-                    lambda: self.hud.set_status("cur_gesture", g)),
                 "on_action": lambda a: self._ui(
                     lambda: self.hud.set_status("action", a)),
                 "toggle_keyboard": lambda: self._ui(self.vkeyboard.toggle),
@@ -74,7 +111,7 @@ class AirOS:
                     lambda: self.hud.set_status(
                         "gesture", "PAUSED" if p else "ON", good=not p)),
                 # V2: pinky-up gesture hides/restores the mini HUD.
-                "toggle_air_hud": self.air_hud.toggle,
+                "toggle_air_hud": lambda: self._ui(self.air_hud.toggle),
             })
 
         self.voice = VoiceEngine(
@@ -89,10 +126,9 @@ class AirOS:
                 "request_confirmation": lambda label, fn: self._ui(
                     lambda: self.hud.show_confirmation(label, fn)),
                 # ---------------- V2 wiring -----------------------------
-                "on_hud": lambda t, k="info", h=6:
-                    self.air_hud.say(t, k, h),
-                "ask_choice": lambda q, opts, cb:
-                    self.air_hud.ask(q, opts, cb),
+                "on_hud": lambda t, k="info", h=6: self._say(t, k, h),
+                "ask_choice": lambda q, opts, cb: self._ui(
+                    lambda: self.air_hud.ask(q, opts, cb)),
                 "on_question_answered": self._on_question_answered,
                 "set_hands_free": self._set_hands_free,
                 "explain_system": lambda: self.monitor.explain(),
@@ -103,16 +139,28 @@ class AirOS:
             "on_alert": self._on_monitor_alert,
         })
 
-        self.fps = FPSCounter()
+        self.router = PassthroughRouter(self.gestures, self.events)
+        self.worker = None
         self._running = True
+        self._last_snap_seq = None
+        self._shown = {}            # last text for fps / cur_gesture
+        self._voice_off_shown = False
+        self._preview_on = None     # last value sent to the worker
+        self._popup_open = None     # last value sent to the worker
+        self._worker_stopped = False
+        self._stopper = None        # thread stopping voice + monitor
+        self._shutdown_deadline = None
 
     # ------------------------------------------------------------------ #
     def _ui(self, fn):
-        """Marshal a callable onto the Tk main thread (thread-safe UI)."""
-        try:
-            self.hud.root.after(0, fn)
-        except Exception:
-            pass
+        """Run a callable on the Tk main thread. Safe from any thread.
+        Legacy bridge only (EventKind.UI_CALL) — new features should
+        use explicit UiEvents."""
+        self.events.emit(EventKind.UI_CALL, fn=fn)
+
+    def _say(self, text, kind="info", hold_seconds=6):
+        """Thread-safe AIR HUD message."""
+        self._ui(lambda: self.air_hud.say(text, kind, hold_seconds))
 
     # ------------------------------------------------------------------ #
     def start(self):
@@ -163,69 +211,121 @@ class AirOS:
         else:
             self.air_hud.set_idle_text("AIR ready (voice off)")
 
-        # Kick off the frame loop and hand control to Tk.
-        self.hud.root.after(TICK_MS, self._tick)
+        # Start the SensorWorker (camera → tracking → gestures) and the
+        # Tk-side poll, then hand control to Tk.
+        self.worker = SensorWorker(
+            self.camera, self.tracker, self.router,
+            self.state, self.events, self.commands,
+            error_sources=(self.tracker, self.mouse, self.keyboard,
+                           self.system, self.voice),
+            # Interim size for the V2 panel preview; the AIR Pod sets
+            # its own size at integration.
+            preview_size=(320, 240),
+            preview_enabled=self._preview_wanted())
+        self.worker.start()
+        self.hud.root.after(POLL_MS, self._poll)
         self.hud.run()
 
     # ------------------------------------------------------------------ #
-    def _tick(self):
-        """One frame of the main loop (runs on the Tk thread)."""
+    def _poll(self):
+        """Tk-thread loop: dispatch UI events, render the newest worker
+        snapshot, and tell the worker about UI state it depends on."""
         if not self._running:
             return
         try:
-            if self.camera.available:
-                ok, frame = self.camera.read()
-                if ok:
-                    self.fps.tick()
-                    landmarks, frame = self.tracker.process(frame, draw=True)
-                    if settings.get("two_hand_gestures"):
-                        self.gestures.process_multi(self.tracker.last_hands)
-                    else:
-                        self.gestures.process(landmarks)
-                    self.hud.update_preview(frame)
-                    self.hud.set_status("fps", f"{self.fps.fps:.0f}")
-            else:
-                # Camera died mid-session? Reflect it once.
-                if self.camera.error:
-                    self.hud.set_status("camera", "OFF", good=False)
-                    self.hud.set_status("gesture", "OFF", good=False)
-                    self.hud.set_error(self.camera.error)
-                    self.camera.error = None  # show once, don't spam
+            for ev in self.events.drain(max_n=50):
+                try:
+                    self._dispatch(ev)
+                except Exception:
+                    # One bad event must not drop the rest of the batch.
+                    traceback.print_exc()
 
-            # Surface any new subsystem errors in the HUD.
-            for src in (self.tracker, self.mouse, self.keyboard,
-                        self.system, self.voice):
-                if getattr(src, "error", None):
-                    self.hud.set_error(src.error)
-                    src.error = None
+            snap = self.state.read()
+            if snap is not None and snap.seq != self._last_snap_seq:
+                self._last_snap_seq = snap.seq
+                self._render(snap)
+
+            self._sync_worker_flags()
 
             # Voice status can change if the mic dies mid-session.
             if self.voice.available and not self.voice.listening:
-                self.hud.set_status("voice", "OFF", good=False)
+                if not self._voice_off_shown:
+                    self._voice_off_shown = True
+                    self.hud.set_status("voice", "OFF", good=False)
         except Exception:
             # The loop must never die — log and keep going.
             traceback.print_exc()
         finally:
             if self._running:
                 try:
-                    self.hud.root.after(TICK_MS, self._tick)
+                    self.hud.root.after(POLL_MS, self._poll)
                 except Exception:
                     pass
+
+    def _dispatch(self, ev):
+        kind, data = ev.kind, ev.data
+        if kind == EventKind.UI_CALL:
+            data["fn"]()
+        elif kind == EventKind.STATUS:
+            self.hud.set_status(data["key"], data["text"],
+                                good=data.get("good"))
+        elif kind == EventKind.ERROR:
+            self.hud.set_error(data["text"])
+        elif kind == EventKind.LOG:
+            print("[AIR]", data.get("text", ""))
+        elif kind == EventKind.POD_SAY:
+            self.air_hud.say(data["text"], data.get("kind", "info"),
+                             data.get("hold_s", 6))
+        elif kind == EventKind.WORKER_STOPPED:
+            self._worker_stopped = True
+        # OVERLAY_* / ACTION_RESULT / MODE_CHANGED arrive in Phase 2.
+
+    def _render(self, snap):
+        if snap.preview_rgb is not None and cv2 is not None:
+            # The V2 panel preview expects BGR. cvtColor makes a new
+            # array, so the published snapshot is never modified.
+            self.hud.update_preview(
+                cv2.cvtColor(snap.preview_rgb, cv2.COLOR_RGB2BGR))
+        if self.camera.available:
+            self._set_frequent("fps", f"{snap.fps:.0f}")
+        self._set_frequent("cur_gesture", snap.gesture_label)
+
+    def _set_frequent(self, key, text):
+        """hud.set_status for per-frame values, skipped when unchanged.
+        Only for keys nothing else writes (fps, cur_gesture)."""
+        if self._shown.get(key) == text:
+            return
+        self._shown[key] = text
+        self.hud.set_status(key, text)
+
+    def _preview_wanted(self):
+        # Interim: the V2 panel's preview toggle. At integration this
+        # becomes "AIR Pod preview visible".
+        return bool(getattr(self.hud, "_preview_visible", True))
+
+    def _sync_worker_flags(self):
+        want = self._preview_wanted()
+        if want != self._preview_on:
+            self._preview_on = want
+            self.commands.send(CommandKind.SET_PREVIEW_ENABLED, on=want)
+        popup = bool(self.hud.overlay_open)
+        if popup != self._popup_open:
+            self._popup_open = popup
+            self.commands.send(CommandKind.SET_LEGACY_POPUP_OPEN, open=popup)
 
     # ------------------------------------------------------------------ #
     # V2: hands-free toggle (voice command "hands free mode")
     # ------------------------------------------------------------------ #
     def _set_hands_free(self, on):
-        self.gestures.paused = not on
-        self._ui(lambda: self.hud.set_status(
-            "gesture", "ON" if on else "PAUSED", good=on))
+        # Called from the voice thread: the worker owns the engine.
+        self.commands.send(CommandKind.SET_GESTURES_PAUSED, paused=not on)
 
     # ------------------------------------------------------------------ #
     # V2: monitor alert -> HUD question -> safe close ladder
     # ------------------------------------------------------------------ #
     def _on_monitor_alert(self, message, proc_info):
         if proc_info is None:
-            self.air_hud.say(message, "warn", hold_seconds=10)
+            self._say(message, "warn", hold_seconds=10)
             return
         # Ask via HUD buttons AND voice (same pending-question path).
         self.voice.ask_question("close_process", proc_info,
@@ -235,17 +335,17 @@ class AirOS:
         answer = (answer or "").lower()
         if kind == "browser_choice":
             if answer in ("chrome", "edge", "default"):
-                self.air_hud.say(
+                self._say(
                     f"Opening {payload.get('label','it')}...", "listen")
                 self.system.open_in_browser(payload["url"], answer)
-                self.air_hud.say("Done ✓", "ok")
+                self._say("Done ✓", "ok")
             else:
-                self.air_hud.say("Cancelled", "info")
+                self._say("Cancelled", "info")
             return
 
         if kind == "close_process":
             if answer != "yes":
-                self.air_hud.say("Okay, leaving it alone", "info")
+                self._say("Okay, leaving it alone", "info")
                 return
             name = payload.get("name", "it")
             # Extra confirmation for apps that may hold unsaved work.
@@ -262,18 +362,18 @@ class AirOS:
             if answer == "yes":
                 self._do_close(payload, force=False)
             else:
-                self.air_hud.say("Okay, leaving it alone", "info")
+                self._say("Okay, leaving it alone", "info")
             return
 
         if kind == "force_close":
             if answer == "yes":
                 self._do_close(payload, force=True)
             else:
-                self.air_hud.say("Okay, not forcing it", "info")
+                self._say("Okay, not forcing it", "info")
 
     def _do_close(self, payload, force):
         ok, msg = self.monitor.close_process(payload["pid"], force=force)
-        self.air_hud.say(msg, "ok" if ok else "warn", hold_seconds=8)
+        self._say(msg, "ok" if ok else "warn", hold_seconds=8)
         if not ok and not force and "force" in msg:
             # Graceful close failed: offer (but never assume) a force kill.
             self.voice.ask_question(
@@ -281,27 +381,55 @@ class AirOS:
                 f"Force close {payload.get('name','it')}?", ["Yes", "No"])
 
     # ------------------------------------------------------------------ #
-    def shutdown(self):
-        """Clean shutdown of every thread and device."""
-        self._running = False
+    def _request_shutdown(self):
+        """Control Panel X: stop every thread without blocking Tk.
+        The worker releases the camera and models itself; voice and the
+        monitor are stopped on a helper thread because their stop()
+        joins. Tk keeps polling and destroys the windows once everything
+        has stopped, or after SHUTDOWN_DEADLINE_S at the latest."""
+        if self._shutdown_deadline is not None:
+            return  # already shutting down
+        self._shutdown_deadline = time.monotonic() + SHUTDOWN_DEADLINE_S
         try:
-            self.voice.stop()
+            self.hud.set_status("action", "Shutting down…")
         except Exception:
             pass
-        try:
-            self.monitor.stop()
-        except Exception:
-            pass
-        try:
-            self.camera.stop()
-        except Exception:
-            pass
-        try:
-            self.tracker.close()
-        except Exception:
-            pass
-        settings.save()
 
+        def stop_background():
+            for fn in (self.voice.stop, self.monitor.stop):
+                try:
+                    fn()
+                except Exception:
+                    pass
+        self._stopper = threading.Thread(target=stop_background,
+                                         name="Stopper", daemon=True)
+        self._stopper.start()
+
+        if self.worker is not None and self.worker.is_alive():
+            self.worker.stop()
+        else:
+            self._worker_stopped = True
+            try:
+                self.camera.stop()
+                self.tracker.close()
+            except Exception:
+                pass
+        self._await_shutdown()
+
+    def _await_shutdown(self):
+        done = self._worker_stopped and not self._stopper.is_alive()
+        if done or time.monotonic() >= self._shutdown_deadline:
+            self._finalize()
+            return
+        self.hud.root.after(50, self._await_shutdown)
+
+    def _finalize(self):
+        self._running = False
+        settings.save()
+        try:
+            self.hud.root.destroy()
+        except Exception:
+            pass
 
 def main():
     try:

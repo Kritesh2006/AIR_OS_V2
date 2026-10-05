@@ -145,11 +145,13 @@ class HandTracker:
             self.error = f"Hand tracker failed to start: {exc}"
 
     # ------------------------------------------------------------------ #
-    def process(self, frame_bgr, draw=True):
+    def process(self, frame_bgr, draw=True, ts_ms=None):
         """
         Detect a hand. Returns (landmarks, frame):
           landmarks — list of 21 (x, y) normalized tuples, or None
           frame     — same frame with the skeleton drawn (if found)
+        ts_ms — the frame's capture timestamp (monotonic ms). When
+        omitted, the current time is used.
         """
         if not self.available or frame_bgr is None:
             return None, frame_bgr
@@ -173,7 +175,8 @@ class HandTracker:
             else:
                 mp_img = mp.Image(image_format=mp.ImageFormat.SRGB, data=rgb)
                 # VIDEO mode requires strictly increasing timestamps (ms).
-                ts = int(time.monotonic() * 1000)
+                ts = int(ts_ms) if ts_ms is not None \
+                    else int(time.monotonic() * 1000)
                 if ts <= self._last_ts:
                     ts = self._last_ts + 1
                 self._last_ts = ts
