@@ -40,13 +40,8 @@ from keyboard_controller import KeyboardController
 from system_controller import SystemController
 from virtual_keyboard import VirtualKeyboard
 from hud import HUD
-from air_hud import AirHUD
+from air_pod import AirPod
 from system_monitor import SystemMonitor
-
-try:
-    import cv2
-except ImportError:
-    cv2 = None
 
 try:
     from win_windows import configure_windows_process
@@ -81,8 +76,9 @@ class AirOS:
         # the worker stops (see _request_shutdown).
         panel = getattr(self.hud, "panel", self.hud.root)
         panel.protocol("WM_DELETE_WINDOW", self._request_shutdown)
-        # V2: the small always-on-top communication HUD (top-left).
-        self.air_hud = AirHUD(self.hud.root)
+        # The AIR Pod: small always-on-top camera + status, top-left.
+        # Keeps the V2 AirHUD API, so it stays named air_hud here.
+        self.air_hud = AirPod(self.hud.root, self.ui_scale)
         self.hud.on_show_air_hud = self.air_hud.show
 
         # ---- Controllers ----------------------------------------------
@@ -218,9 +214,7 @@ class AirOS:
             self.state, self.events, self.commands,
             error_sources=(self.tracker, self.mouse, self.keyboard,
                            self.system, self.voice),
-            # Interim size for the V2 panel preview; the AIR Pod sets
-            # its own size at integration.
-            preview_size=(320, 240),
+            preview_size=self.air_hud.preview_size,
             preview_enabled=self._preview_wanted())
         self.worker.start()
         self.hud.root.after(POLL_MS, self._poll)
@@ -281,11 +275,7 @@ class AirOS:
         # OVERLAY_* / ACTION_RESULT / MODE_CHANGED arrive in Phase 2.
 
     def _render(self, snap):
-        if snap.preview_rgb is not None and cv2 is not None:
-            # The V2 panel preview expects BGR. cvtColor makes a new
-            # array, so the published snapshot is never modified.
-            self.hud.update_preview(
-                cv2.cvtColor(snap.preview_rgb, cv2.COLOR_RGB2BGR))
+        self.air_hud.render(snap)
         if self.camera.available:
             self._set_frequent("fps", f"{snap.fps:.0f}")
         self._set_frequent("cur_gesture", snap.gesture_label)
@@ -299,9 +289,7 @@ class AirOS:
         self.hud.set_status(key, text)
 
     def _preview_wanted(self):
-        # Interim: the V2 panel's preview toggle. At integration this
-        # becomes "AIR Pod preview visible".
-        return bool(getattr(self.hud, "_preview_visible", True))
+        return self.air_hud.preview_visible
 
     def _sync_worker_flags(self):
         want = self._preview_wanted()
