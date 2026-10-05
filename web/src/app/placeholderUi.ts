@@ -17,6 +17,7 @@ import type {
   StartScreenView,
 } from '../contracts';
 import { HAND_CONNECTIONS } from '../core/hand';
+import { PlaceholderWorkspace } from './placeholderWorkspace';
 
 const GESTURE_ICON: Record<GestureName, string> = {
   'OPEN PALM': '🖐',
@@ -110,6 +111,7 @@ class PlaceholderPod implements PodView {
     this.gesture.textContent =
       state.tracker === 'loading' ? 'Loading hand tracking…'
       : state.tracker === 'unavailable' ? 'Hand tracking unavailable'
+      : state.hint ? state.hint
       : state.gesture ? `${GESTURE_ICON[state.gesture]} ${state.gesture}`
       : state.phase === 'running' ? 'Raise your hand' : '';
   }
@@ -216,5 +218,6 @@ export function createPlaceholderUi(): AirUi {
     privacy: new PlaceholderPrivacy(),
     cursor: new PlaceholderCursor(),
     debug: new PlaceholderDebug(),
+    workspace: new PlaceholderWorkspace(),
   };
 }

@@ -3,7 +3,7 @@
  * No DOM access, so it is unit-testable in Node.
  */
 
-import type { AirPhase, AirViewState } from '../contracts';
+import type { AirPhase, AirViewState, PodStatus } from '../contracts';
 import type { GestureName } from './gestures';
 
 export type CameraFailureReason = 'denied' | 'unavailable' | 'error';
@@ -19,9 +19,15 @@ export type AirEvent =
   | { type: 'TRACKER_LOADING' }
   | { type: 'TRACKER_READY' }
   | { type: 'TRACKER_FAILED'; message: string }
-  | { type: 'HAND'; gesture: GestureName | null; confidence: number };
+  | { type: 'HAND'; gesture: GestureName | null; confidence: number }
+  | { type: 'INTERACTION'; status: PodStatus | null; hint: string };
 
-const NO_HAND = { handPresent: false, gesture: '', handConfidence: 0 } as const;
+const NO_HAND = { handPresent: false, gesture: '', handConfidence: 0, actionStatus: null, hint: '' } as const;
+
+/** While running, the interaction's status wins over HAND / READY. */
+function runningPod(s: Pick<AirViewState, 'actionStatus' | 'handPresent'>): PodStatus {
+  return s.actionStatus ?? (s.handPresent ? 'HAND' : 'READY');
+}
 
 export const INITIAL_STATE: AirViewState = Object.freeze({
   phase: 'idle',
@@ -100,12 +106,19 @@ export function reduce(state: AirViewState, ev: AirEvent): AirViewState {
       const present = ev.gesture !== null;
       const gesture = ev.gesture ?? '';
       const handConfidence = present ? Math.round(ev.confidence * 10) / 10 : 0;
-      const podStatus = present ? 'HAND' : 'READY';
+      const podStatus = runningPod({ actionStatus: state.actionStatus, handPresent: present });
       if (present === state.handPresent && gesture === state.gesture &&
           handConfidence === state.handConfidence && podStatus === state.podStatus) {
         return state;
       }
       return next(state, { handPresent: present, gesture, handConfidence, podStatus });
+    }
+
+    case 'INTERACTION': {
+      if (state.phase !== 'running') return state;
+      if (ev.status === state.actionStatus && ev.hint === state.hint) return state;
+      const podStatus = runningPod({ actionStatus: ev.status, handPresent: state.handPresent });
+      return next(state, { actionStatus: ev.status, hint: ev.hint, podStatus });
     }
   }
 }

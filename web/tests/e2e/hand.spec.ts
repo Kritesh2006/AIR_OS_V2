@@ -1,6 +1,5 @@
-import { dirname, resolve } from 'node:path';
-import { fileURLToPath } from 'node:url';
-import { expect, test, type BrowserType, type Page } from '@playwright/test';
+import { expect, test } from '@playwright/test';
+import { withCamera } from './camera';
 
 /**
  * Real MediaPipe hand tracking on real hand photos fed in as the camera
@@ -8,23 +7,6 @@ import { expect, test, type BrowserType, type Page } from '@playwright/test';
  * Each clip needs its own browser launch because the fake camera file is a
  * launch flag.
  */
-const here = dirname(fileURLToPath(import.meta.url));
-
-async function withCamera(browserType: BrowserType, clip: string, baseURL: string, fn: (page: Page) => Promise<void>) {
-  const browser = await browserType.launch({
-    args: [
-      '--use-fake-ui-for-media-stream',
-      '--use-fake-device-for-media-stream',
-      `--use-file-for-fake-video-capture=${resolve(here, `../fixtures/${clip}.mjpeg`)}`,
-    ],
-  });
-  try {
-    const context = await browser.newContext({ baseURL, permissions: ['camera'] });
-    await fn(await context.newPage());
-  } finally {
-    await browser.close();
-  }
-}
 
 const cases = [
   { clip: 'pointing_up', gesture: 'POINT' },
@@ -43,9 +25,12 @@ for (const { clip, gesture } of cases) {
       const html = page.locator('html');
       await expect(html).toHaveAttribute('data-air-phase', 'running', { timeout: 15_000 });
       await expect(html).toHaveAttribute('data-air-tracker', 'ready', { timeout: 20_000 });
-      await expect(page.getByTestId('pod-status')).toHaveText('AIR • HAND', { timeout: 10_000 });
+      // A held fist also starts the W2 close flow, so the Pod may already
+      // have moved on from HAND to CLOSE? / SELECT.
+      await expect(page.getByTestId('pod-status')).toHaveText(/AIR • (HAND|CLOSE\?|SELECT|CONFIRM)/, { timeout: 10_000 });
       await expect(html).toHaveAttribute('data-air-gesture', gesture);
-      await expect(page.getByTestId('pod-gesture')).toContainText(gesture);
+      // (A held fist replaces the gesture name with the W2 close hint.)
+      if (gesture !== 'FIST') await expect(page.getByTestId('pod-gesture')).toContainText(gesture);
 
       const cursor = page.getByTestId('air-cursor');
       await expect(cursor).toHaveAttribute('data-visible', 'true');

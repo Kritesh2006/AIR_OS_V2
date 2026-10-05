@@ -6,6 +6,9 @@
  *  - frame loop (once per NEW camera frame): hand tracking → gesture →
  *    pointer target. Inference is synchronous, so it never queues.
  *  - animation loop (requestAnimationFrame): CursorView.update() only.
+ *
+ * W2: the interaction core (fist → select → confirm) runs in the frame
+ * loop on in-page demo windows; Enter / Esc / taps feed it commands.
  */
 
 import './styles.css';
@@ -14,10 +17,12 @@ import { INITIAL_STATE, reduce, type AirEvent } from '../core/airState';
 import { FpsCounter } from '../core/fps';
 import { classifyGesture, GestureStabilizer } from '../core/gestures';
 import { LM } from '../core/hand';
+import { InteractionController, type InteractionCommand, type InteractionSnapshot } from '../core/interaction';
 import { PointerController } from '../core/pointer';
 import { CameraController, classifyCameraError } from '../vision/camera';
 import { FrameSource } from '../vision/frameSource';
 import { HandTracker } from '../vision/handTracker';
+import { InPageWindowProvider, WindowStore } from './demoWindows';
 import { createPlaceholderUi } from './placeholderUi';
 
 const FPS_PUBLISH_MS = 500;
@@ -29,6 +34,9 @@ export function startApp(root: HTMLElement, ui: AirUi = createPlaceholderUi()): 
   const gestures = new GestureStabilizer();
   const pointer = new PointerController();
   const fps = new FpsCounter();
+  const windows = new WindowStore();
+  const interaction = new InteractionController(new InPageWindowProvider(windows));
+  let lastSnap: InteractionSnapshot | null = null;
   let lastFpsPublish = 0;
   let state: AirViewState = INITIAL_STATE;
   let debug = new URLSearchParams(window.location.search).has('debug');
@@ -50,8 +58,23 @@ export function startApp(root: HTMLElement, ui: AirUi = createPlaceholderUi()): 
     const viewport = { width: window.innerWidth, height: window.innerHeight };
     pointer.update(hand ? hand.landmarks[LM.INDEX_TIP] : null, ts, viewport, hand?.score ?? 0, stable === 'PINCH');
     dispatch({ type: 'HAND', gesture: stable, confidence: hand?.score ?? 0 });
+    applyInteraction(interaction.step({ ts, gesture: stable, cursor: pointer.targetAt(ts), viewport }));
     if (debug) ui.debug.drawHands(hands);
   });
+
+  function applyInteraction(snap: InteractionSnapshot): void {
+    if (snap === lastSnap) return;
+    lastSnap = snap;
+    const html = document.documentElement.dataset;
+    html.airMode = snap.mode;
+    html.airSession = snap.state;
+    ui.workspace.render(snap);
+    dispatch({ type: 'INTERACTION', status: snap.podStatus, hint: snap.hint });
+  }
+
+  function command(cmd: InteractionCommand): void {
+    applyInteraction(interaction.command(cmd, performance.now()));
+  }
 
   function animate(now: number): void {
     ui.cursor.update({ ...pointer.sample(now), gesture: state.gesture });
@@ -75,6 +98,7 @@ export function startApp(root: HTMLElement, ui: AirUi = createPlaceholderUi()): 
     html.airGesture = state.gesture;
     ui.start.setVisible(START_VISIBLE.has(state.phase));
     ui.pod.setVisible(!START_VISIBLE.has(state.phase));
+    ui.workspace.setVisible(!START_VISIBLE.has(state.phase));
     ui.start.render(state);
     ui.pod.render(state);
     setAnimating(state.phase === 'running');
@@ -120,15 +144,25 @@ export function startApp(root: HTMLElement, ui: AirUi = createPlaceholderUi()): 
     fps.reset();
     gestures.reset();
     pointer.reset();
+    applyInteraction(interaction.reset());
     if (debug) ui.debug.drawHands([]);
   }
 
+  ui.workspace.mount(root);
   ui.start.mount(root);
   ui.pod.mount(root);
   ui.privacy.mount(root);
   ui.debug.mount(root);
   ui.cursor.mount(root);
   ui.debug.setEnabled(debug);
+  ui.workspace.setWindows(windows.windows, windows.total);
+  applyInteraction(interaction.snapshot);
+
+  windows.onChange((w) => ui.workspace.setWindows(w, windows.total));
+  ui.workspace.onTargetTap((id) => command({ type: 'TAP_TARGET', id }));
+  ui.workspace.onConfirmTap(() => command({ type: 'CONFIRM' }));
+  ui.workspace.onCancelTap(() => command({ type: 'CANCEL' }));
+  ui.workspace.onReset(() => windows.reset());
 
   ui.start.onStart(() => {
     if (state.phase === 'requesting') return;
@@ -145,12 +179,23 @@ export function startApp(root: HTMLElement, ui: AirUi = createPlaceholderUi()): 
     dispatch({ type: 'STOPPED' });
   });
 
-  // Developer view: D toggles the landmark skeleton.
   window.addEventListener('keydown', (e) => {
     const typing = e.target instanceof HTMLInputElement || e.target instanceof HTMLTextAreaElement;
-    if (!typing && !e.repeat && (e.key === 'd' || e.key === 'D') && !e.ctrlKey && !e.metaKey && !e.altKey) {
+    if (typing || e.repeat || e.ctrlKey || e.metaKey || e.altKey) return;
+    // Developer view: D toggles the landmark skeleton.
+    if (e.key === 'd' || e.key === 'D') {
       debug = !debug;
       ui.debug.setEnabled(debug);
+    }
+    // Only while a close selection is open; otherwise keys behave normally.
+    if (interaction.snapshot.mode === 'CLOSE_SELECTION') {
+      if (e.key === 'Escape') {
+        e.preventDefault();
+        command({ type: 'CANCEL' });
+      } else if (e.key === 'Enter') {
+        e.preventDefault(); // temporary W2 confirm (blink replaces it in W3)
+        command({ type: 'CONFIRM' });
+      }
     }
   });
 

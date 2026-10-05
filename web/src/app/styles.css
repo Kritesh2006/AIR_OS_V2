@@ -29,7 +29,7 @@ button { font: inherit; cursor: pointer; }
 .start-message.is-error { color: var(--warn); }
 .link { background: none; border: none; color: var(--dim); text-decoration: underline; }
 
-.pod { position: fixed; top: 12px; left: 12px; width: 192px; padding: 8px; border-radius: 14px;
+.pod { position: fixed; top: 12px; left: 12px; z-index: 950; width: 192px; padding: 8px; border-radius: 14px;
   background: var(--panel); border: 1px solid var(--border); backdrop-filter: blur(8px); }
 .pod-video { display: block; width: 176px; height: 132px; object-fit: cover; border-radius: 9px;
   background: #05060a; transform: scaleX(-1); }
@@ -59,3 +59,47 @@ button { font: inherit; cursor: pointer; }
 .air-cursor[data-gesture="PEACE"] { border-color: #f472b6; box-shadow: 0 0 24px rgba(244, 114, 182, 0.8); }
 
 .debug-layer { position: fixed; inset: 0; width: 100vw; height: 100vh; pointer-events: none; z-index: 900; }
+
+/* ---- W2 workspace (temporary look; Sol replaces) ---- */
+.workspace { position: fixed; inset: 0; overflow: auto; }
+.desk-help { position: absolute; top: 18px; left: 50%; transform: translateX(-50%); color: var(--dim);
+  font-size: 13px; white-space: nowrap; }
+.desk { display: grid; grid-template-columns: repeat(auto-fill, minmax(230px, 1fr)); gap: 16px;
+  padding: 220px 20px 90px; max-width: 1100px; margin: 0 auto; }
+@media (min-width: 760px) { .desk { padding-top: 70px; padding-left: 230px; } }
+@media (max-width: 759px) { .desk-help { top: 250px; white-space: normal; width: 90%; text-align: center; } .desk { padding-top: 300px; } }
+.air-window { border: 1px solid var(--border); border-radius: 12px; background: #111522; overflow: hidden;
+  box-shadow: 0 10px 30px rgba(0, 0, 0, 0.4); animation: win-in 200ms ease-out; }
+.air-window-bar { display: flex; gap: 10px; align-items: center; padding: 8px 12px; background: #171c2c; font-size: 13px; }
+.air-window-dots { color: #3b4463; font-size: 9px; letter-spacing: 2px; }
+.air-window-title { font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.air-window-body { padding: 12px 14px 16px; color: var(--dim); font-size: 13px; }
+@keyframes win-in { from { opacity: 0; transform: scale(0.96); } to { opacity: 1; transform: none; } }
+.reset-windows { position: fixed; right: 16px; bottom: 16px; padding: 10px 16px; border-radius: 999px;
+  border: 1px solid var(--border); background: var(--panel); color: var(--text); }
+
+.arm-indicator { position: fixed; bottom: 18px; left: 50%; transform: translateX(-50%); padding: 10px 18px;
+  border-radius: 999px; background: var(--panel); border: 1px solid var(--warn); z-index: 850; min-width: 220px; text-align: center; }
+.arm-label { font-weight: 700; margin-bottom: 6px; }
+.progress-track { height: 4px; border-radius: 4px; background: rgba(255, 255, 255, 0.12); overflow: hidden; }
+.progress-fill { height: 100%; width: 100%; background: var(--warn); transform-origin: left; transform: scaleX(0); }
+.progress-fill.dwell { background: var(--accent); }
+
+.selection-overlay { position: fixed; inset: 0; background: rgba(4, 5, 10, 0.72); backdrop-filter: blur(3px); z-index: 800; }
+.selection-header { position: absolute; z-index: 2; bottom: 18px; left: 50%; transform: translateX(-50%); display: flex; gap: 14px;
+  align-items: center; white-space: nowrap; }
+.selection-title { font-size: 18px; font-weight: 700; }
+.cancel-button { padding: 6px 14px; border-radius: 999px; border: 1px solid var(--border); background: transparent; color: var(--text); }
+.card-layer { position: absolute; inset: 0; pointer-events: none; }
+.select-card { position: absolute; left: 0; top: 0; padding: 10px 12px; border-radius: 14px; background: #151a29;
+  border: 2px solid var(--border); display: flex; flex-direction: column; gap: 4px; cursor: pointer;
+  transition: border-color 120ms, box-shadow 120ms, background 120ms; overflow: hidden; pointer-events: auto; }
+.select-card[data-hovered="true"] { border-color: #a78bfa; box-shadow: 0 0 22px rgba(167, 139, 250, 0.45); }
+.select-card[data-locked="true"] { border-color: var(--bad); background: #23161d; box-shadow: 0 0 28px rgba(248, 113, 113, 0.55); }
+.card-icon { font-size: 22px; line-height: 1.2; }
+.card-label { font-weight: 700; }
+.card-sub { color: var(--dim); font-size: 12px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.card-track { margin-top: auto; }
+.confirm-button { position: absolute; left: 8px; right: 8px; bottom: 8px; overflow: hidden; padding: 8px; border-radius: 10px;
+  border: none; background: var(--bad); color: #1a0b0b; font-weight: 800; }
+.confirm-button .progress-fill { position: absolute; left: 0; bottom: 0; height: 4px; background: #fff; }

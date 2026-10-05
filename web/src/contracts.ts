@@ -12,9 +12,10 @@
 
 import type { GestureName } from './core/gestures';
 import type { HandObservation } from './core/hand';
+import type { InteractionSnapshot } from './core/interaction';
 import type { CursorSample } from './core/pointer';
 
-export type { CursorSample, GestureName, HandObservation };
+export type { CursorSample, GestureName, HandObservation, InteractionSnapshot };
 
 /** Lifecycle of the AIR session. */
 export type AirPhase =
@@ -33,6 +34,7 @@ export type PodStatus =
   | 'PAUSED'
   | 'CLOSE?'
   | 'SELECT'
+  | 'CONFIRM' // W2: locked card waiting for Enter / tap / pinch (blink in W3)
   | 'BLINK'
   | 'CLOSING…'
   | 'CLOSED'
@@ -54,6 +56,10 @@ export interface AirViewState {
   readonly gesture: GestureName | '';
   /** Hand confidence 0..1, rounded to 0.1 (0 when no hand). */
   readonly handConfidence: number;
+  /** Interaction-driven Pod status (CLOSE?, SELECT, …); null = none. */
+  readonly actionStatus: PodStatus | null;
+  /** One-line instruction for the current interaction step ('' = none). */
+  readonly hint: string;
 }
 
 export type TrackerStatus = 'off' | 'loading' | 'ready' | 'unavailable';
@@ -117,6 +123,36 @@ export interface DebugLayerView {
   drawHands(hands: readonly HandObservation[]): void;
 }
 
+/** A mock in-page AIR window (W2 demo content). */
+export interface AirWindow {
+  readonly id: string;
+  readonly app: string;
+  readonly title: string;
+  readonly icon: string;
+  readonly lines: readonly string[];
+}
+
+/**
+ * The page's "desktop": mock AIR windows in NORMAL mode, and the close
+ * selection (dim layer + centered cards at the given rects) in
+ * CLOSE_SELECTION. render() is called whenever the interaction snapshot
+ * changes — up to once per tracker frame while progress values move —
+ * so keep it cheap. Cards must be clickable/tappable; the cursor is not.
+ * Test ids: `workspace`, `air-window` (data-window-id), `arm-indicator`,
+ * `selection-overlay`, `select-card` (data-target-id, data-hovered,
+ * data-locked), `confirm-button`, `cancel-button`, `reset-windows`.
+ */
+export interface WorkspaceView {
+  mount(root: HTMLElement): void;
+  setVisible(visible: boolean): void;
+  setWindows(windows: readonly AirWindow[], total: number): void;
+  render(snapshot: InteractionSnapshot): void;
+  onTargetTap(cb: (id: string) => void): void;
+  onConfirmTap(cb: () => void): void;
+  onCancelTap(cb: () => void): void;
+  onReset(cb: () => void): void;
+}
+
 /** Everything the app layer needs from the UI layer. */
 export interface AirUi {
   readonly start: StartScreenView;
@@ -124,4 +160,5 @@ export interface AirUi {
   readonly privacy: PrivacyView;
   readonly cursor: CursorView;
   readonly debug: DebugLayerView;
+  readonly workspace: WorkspaceView;
 }

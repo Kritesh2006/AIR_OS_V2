@@ -87,6 +87,11 @@ export class PointerController {
     this.pressed = pressed;
   }
 
+  /** Filtered cursor position for hit-testing, or null if not visible. */
+  targetAt(nowMs: number): { x: number; y: number } | null {
+    return this.target && nowMs - this.lastSeen <= this.cfg.lostGraceMs ? this.target : null;
+  }
+
   /** Call once per animation frame. */
   sample(nowMs: number): CursorSample {
     const dt = this.lastSample ? Math.max(0, nowMs - this.lastSample) : 16;
