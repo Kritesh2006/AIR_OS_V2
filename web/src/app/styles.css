@@ -40,3 +40,22 @@ button { font: inherit; cursor: pointer; }
 .privacy { max-width: 440px; border: 1px solid var(--border); border-radius: 14px; background: #111522;
   color: var(--text); padding: 20px; }
 .privacy::backdrop { background: rgba(0, 0, 0, 0.6); }
+
+.pod-gesture { margin-top: 4px; font-size: 13px; font-weight: 600; color: var(--text); min-height: 1.4em; }
+.pod[data-hand="true"] { border-color: var(--accent); box-shadow: 0 0 18px rgba(124, 58, 237, 0.45); }
+
+/* AIR virtual cursor (temporary look; Sol replaces). Never takes input. */
+.air-cursor { position: fixed; left: 0; top: 0; width: 44px; height: 44px; margin: -22px 0 0 -22px;
+  border-radius: 50%; border: 3px solid #a78bfa; background: rgba(124, 58, 237, 0.18);
+  box-shadow: 0 0 24px rgba(167, 139, 250, 0.9), inset 0 0 12px rgba(167, 139, 250, 0.6);
+  pointer-events: none; opacity: 0; z-index: 1000; will-change: transform, opacity;
+  transition: width 120ms, height 120ms, margin 120ms, background 120ms, border-color 120ms; }
+.air-cursor::after { content: ""; position: absolute; left: 50%; top: 50%; width: 8px; height: 8px;
+  margin: -4px 0 0 -4px; border-radius: 50%; background: #fff; }
+.air-cursor.is-pressed { width: 26px; height: 26px; margin: -13px 0 0 -13px; background: #a78bfa; }
+.air-cursor[data-gesture="FIST"] { border-color: var(--warn); box-shadow: 0 0 24px rgba(251, 191, 36, 0.8); }
+.air-cursor[data-gesture="OPEN PALM"] { width: 64px; height: 64px; margin: -32px 0 0 -32px; border-color: var(--ok);
+  box-shadow: 0 0 28px rgba(52, 211, 153, 0.8); }
+.air-cursor[data-gesture="PEACE"] { border-color: #f472b6; box-shadow: 0 0 24px rgba(244, 114, 182, 0.8); }
+
+.debug-layer { position: fixed; inset: 0; width: 100vw; height: 100vh; pointer-events: none; z-index: 900; }

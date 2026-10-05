@@ -10,6 +10,12 @@
  *  - Keep the data-testid values listed on each view; the e2e tests use them.
  */
 
+import type { GestureName } from './core/gestures';
+import type { HandObservation } from './core/hand';
+import type { CursorSample } from './core/pointer';
+
+export type { CursorSample, GestureName, HandObservation };
+
 /** Lifecycle of the AIR session. */
 export type AirPhase =
   | 'idle' // not started yet: show the Start AIR screen
@@ -20,9 +26,10 @@ export type AirPhase =
   | 'unavailable' // no camera, camera busy, or not a secure (HTTPS) page
   | 'error'; // anything else
 
-/** Same vocabulary as the desktop PodStatus (see docs/CORE.md later). */
+/** Same vocabulary as the desktop PodStatus, plus web's HAND. */
 export type PodStatus =
   | 'READY'
+  | 'HAND'
   | 'PAUSED'
   | 'CLOSE?'
   | 'SELECT'
@@ -39,11 +46,17 @@ export interface AirViewState {
   readonly message: string;
   /** Camera frames per second; 0 when not running. */
   readonly fps: number;
-  /** W1: a hand is currently tracked. Always false in W0. */
+  /** Hand tracking model: off until Start, then loading → ready (or unavailable). */
+  readonly tracker: TrackerStatus;
+  /** A hand is currently tracked (stabilized). */
   readonly handPresent: boolean;
-  /** W1: current gesture label. '' in W0. */
-  readonly gesture: string;
+  /** Stable gesture, or '' when no hand. */
+  readonly gesture: GestureName | '';
+  /** Hand confidence 0..1, rounded to 0.1 (0 when no hand). */
+  readonly handConfidence: number;
 }
+
+export type TrackerStatus = 'off' | 'loading' | 'ready' | 'unavailable';
 
 /**
  * Full-screen entry view. Visible while phase is idle / requesting /
@@ -62,7 +75,7 @@ export interface StartScreenView {
  * Tiny top-left camera Pod. Visible while phase is running / paused.
  * The Pod shows the stream in its own <video muted playsinline>; it must
  * not keep a reference to the stream after setStream(null).
- * Test ids: `pod`, `pod-status`, `pod-video`, `pod-stop`.
+ * Test ids: `pod`, `pod-status`, `pod-gesture`, `pod-video`, `pod-stop`.
  */
 export interface PodView {
   mount(root: HTMLElement): void;
@@ -82,9 +95,33 @@ export interface PrivacyView {
   close(): void;
 }
 
+/**
+ * The AIR virtual cursor. update() is called once per animation frame
+ * (NOT through render()); move it with CSS transforms only. It must never
+ * capture pointer events. Test id: `air-cursor`.
+ */
+export interface CursorView {
+  mount(root: HTMLElement): void;
+  update(sample: CursorSample & { readonly gesture: GestureName | '' }): void;
+}
+
+/**
+ * Developer visualization of the raw landmarks. Off by default; toggled
+ * with the D key or the ?debug URL parameter. drawHands() is called once
+ * per tracker frame while enabled. Landmarks are unmirrored camera
+ * coordinates; mirror x when drawing. Test id: `debug-layer`.
+ */
+export interface DebugLayerView {
+  mount(root: HTMLElement): void;
+  setEnabled(on: boolean): void;
+  drawHands(hands: readonly HandObservation[]): void;
+}
+
 /** Everything the app layer needs from the UI layer. */
 export interface AirUi {
   readonly start: StartScreenView;
   readonly pod: PodView;
   readonly privacy: PrivacyView;
+  readonly cursor: CursorView;
+  readonly debug: DebugLayerView;
 }

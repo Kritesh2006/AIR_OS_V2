@@ -74,7 +74,7 @@ test('privacy dialog opens from the start screen', async ({ page }) => {
   await expect(page.getByTestId('privacy-dialog')).toBeHidden();
 });
 
-test('production build: CSP present, no third-party requests, no console errors', async ({ page }) => {
+test('production build: CSP present, model self-hosted, no third-party requests, no console errors', async ({ page }) => {
   const foreign: string[] = [];
   const errors: string[] = [];
   page.on('request', (r) => {
@@ -91,7 +91,9 @@ test('production build: CSP present, no third-party requests, no console errors'
 
   await page.getByTestId('start-button').click();
   await expect(page.locator('html')).toHaveAttribute('data-air-phase', 'running');
-  await page.waitForTimeout(1500);
+  // Hand model + wasm runtime must load from our own origin only.
+  await expect(page.locator('html')).toHaveAttribute('data-air-tracker', 'ready', { timeout: 20_000 });
+  await page.waitForTimeout(1000);
 
   expect(foreign).toEqual([]);
   expect(errors).toEqual([]);

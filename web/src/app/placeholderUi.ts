@@ -4,7 +4,28 @@
  * it exists only so W0 is deployable and testable.
  */
 
-import type { AirUi, AirViewState, PodView, PrivacyView, StartScreenView } from '../contracts';
+import type {
+  AirUi,
+  AirViewState,
+  CursorSample,
+  CursorView,
+  DebugLayerView,
+  GestureName,
+  HandObservation,
+  PodView,
+  PrivacyView,
+  StartScreenView,
+} from '../contracts';
+import { HAND_CONNECTIONS } from '../core/hand';
+
+const GESTURE_ICON: Record<GestureName, string> = {
+  'OPEN PALM': '🖐',
+  FIST: '✊',
+  POINT: '☝',
+  PEACE: '✌',
+  PINCH: '🤏',
+  HAND: '✋',
+};
 
 function el<K extends keyof HTMLElementTagNameMap>(
   tag: K,
@@ -60,6 +81,7 @@ class PlaceholderPod implements PodView {
   private root = el('aside', { className: 'pod', testId: 'pod' });
   private video = el('video', { className: 'pod-video', testId: 'pod-video' });
   private status = el('span', { className: 'pod-status', testId: 'pod-status' });
+  private gesture = el('div', { className: 'pod-gesture', testId: 'pod-gesture' });
   private stop = el('button', { className: 'pod-stop', text: '×', testId: 'pod-stop' });
 
   mount(root: HTMLElement): void {
@@ -67,7 +89,7 @@ class PlaceholderPod implements PodView {
     this.video.playsInline = true;
     this.video.setAttribute('playsinline', '');
     this.stop.title = 'Stop AIR (turns the camera off)';
-    this.root.append(this.video, el('div', { className: 'pod-bar' }, [this.status, this.stop]));
+    this.root.append(this.video, el('div', { className: 'pod-bar' }, [this.status, this.stop]), this.gesture);
     this.root.hidden = true;
     root.appendChild(this.root);
   }
@@ -84,6 +106,12 @@ class PlaceholderPod implements PodView {
   render(state: AirViewState): void {
     this.status.textContent = `AIR • ${state.podStatus}`;
     this.root.dataset.phase = state.phase;
+    this.root.dataset.hand = String(state.handPresent);
+    this.gesture.textContent =
+      state.tracker === 'loading' ? 'Loading hand tracking…'
+      : state.tracker === 'unavailable' ? 'Hand tracking unavailable'
+      : state.gesture ? `${GESTURE_ICON[state.gesture]} ${state.gesture}`
+      : state.phase === 'running' ? 'Raise your hand' : '';
   }
 
   setVisible(visible: boolean): void {
@@ -119,6 +147,74 @@ class PlaceholderPrivacy implements PrivacyView {
   }
 }
 
+class PlaceholderCursor implements CursorView {
+  private root = el('div', { className: 'air-cursor', testId: 'air-cursor' });
+
+  mount(root: HTMLElement): void {
+    this.root.setAttribute('aria-hidden', 'true');
+    root.appendChild(this.root);
+  }
+
+  update(c: CursorSample & { readonly gesture: GestureName | '' }): void {
+    this.root.style.transform = `translate3d(${c.x}px, ${c.y}px, 0)`;
+    this.root.style.opacity = c.visible ? String(0.45 + 0.55 * c.confidence) : '0';
+    this.root.dataset.visible = String(c.visible);
+    this.root.dataset.gesture = c.gesture;
+    this.root.classList.toggle('is-pressed', c.pressed);
+  }
+}
+
+class PlaceholderDebug implements DebugLayerView {
+  private canvas = el('canvas', { className: 'debug-layer', testId: 'debug-layer' });
+  private enabled = false;
+
+  mount(root: HTMLElement): void {
+    this.canvas.hidden = true;
+    root.appendChild(this.canvas);
+  }
+
+  setEnabled(on: boolean): void {
+    this.enabled = on;
+    this.canvas.hidden = !on;
+    if (!on) this.canvas.getContext('2d')?.clearRect(0, 0, this.canvas.width, this.canvas.height);
+  }
+
+  drawHands(hands: readonly HandObservation[]): void {
+    if (!this.enabled) return;
+    const w = (this.canvas.width = window.innerWidth);
+    const h = (this.canvas.height = window.innerHeight);
+    const ctx = this.canvas.getContext('2d');
+    if (!ctx) return;
+    ctx.clearRect(0, 0, w, h);
+    const px = (p: { x: number; y: number }) => [(1 - p.x) * w, p.y * h] as const; // mirrored
+    for (const hand of hands) {
+      ctx.strokeStyle = 'rgba(124, 58, 237, 0.9)';
+      ctx.lineWidth = 3;
+      for (const [a, b] of HAND_CONNECTIONS) {
+        const [ax, ay] = px(hand.landmarks[a]);
+        const [bx, by] = px(hand.landmarks[b]);
+        ctx.beginPath();
+        ctx.moveTo(ax, ay);
+        ctx.lineTo(bx, by);
+        ctx.stroke();
+      }
+      ctx.fillStyle = '#e8eaf2';
+      for (const p of hand.landmarks) {
+        const [x, y] = px(p);
+        ctx.beginPath();
+        ctx.arc(x, y, 4, 0, Math.PI * 2);
+        ctx.fill();
+      }
+    }
+  }
+}
+
 export function createPlaceholderUi(): AirUi {
-  return { start: new PlaceholderStart(), pod: new PlaceholderPod(), privacy: new PlaceholderPrivacy() };
+  return {
+    start: new PlaceholderStart(),
+    pod: new PlaceholderPod(),
+    privacy: new PlaceholderPrivacy(),
+    cursor: new PlaceholderCursor(),
+    debug: new PlaceholderDebug(),
+  };
 }

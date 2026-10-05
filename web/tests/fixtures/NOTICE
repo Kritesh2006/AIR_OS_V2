@@ -1,0 +1,5 @@
+pointing_up.jpg, victory.jpg, fist.jpg and thumb_up.jpg are test images
+from the MediaPipe project (https://github.com/google-ai-edge/mediapipe,
+storage.googleapis.com/mediapipe-assets), licensed under Apache-2.0.
+The .mjpeg files are 640x480 letterboxed copies made by make-videos.mjs
+for use as a fake camera in browser tests.

@@ -4,6 +4,7 @@
  */
 
 import type { AirPhase, AirViewState } from '../contracts';
+import type { GestureName } from './gestures';
 
 export type CameraFailureReason = 'denied' | 'unavailable' | 'error';
 
@@ -14,15 +15,21 @@ export type AirEvent =
   | { type: 'TAB_HIDDEN' }
   | { type: 'TAB_VISIBLE' }
   | { type: 'STOPPED' }
-  | { type: 'FPS'; fps: number };
+  | { type: 'FPS'; fps: number }
+  | { type: 'TRACKER_LOADING' }
+  | { type: 'TRACKER_READY' }
+  | { type: 'TRACKER_FAILED'; message: string }
+  | { type: 'HAND'; gesture: GestureName | null; confidence: number };
+
+const NO_HAND = { handPresent: false, gesture: '', handConfidence: 0 } as const;
 
 export const INITIAL_STATE: AirViewState = Object.freeze({
   phase: 'idle',
   podStatus: 'READY',
   message: '',
   fps: 0,
-  handPresent: false,
-  gesture: '',
+  tracker: 'off',
+  ...NO_HAND,
 });
 
 const STARTABLE: ReadonlySet<AirPhase> = new Set(['idle', 'denied', 'unavailable', 'error']);
@@ -54,7 +61,7 @@ export function reduce(state: AirViewState, ev: AirEvent): AirViewState {
 
     case 'TAB_HIDDEN':
       return state.phase === 'running'
-        ? next(state, { phase: 'paused', podStatus: 'PAUSED', fps: 0, handPresent: false, gesture: '' })
+        ? next(state, { phase: 'paused', podStatus: 'PAUSED', fps: 0, ...NO_HAND })
         : state;
 
     case 'TAB_VISIBLE':
@@ -66,12 +73,39 @@ export function reduce(state: AirViewState, ev: AirEvent): AirViewState {
 
     case 'STOPPED':
       return state.phase === 'running' || state.phase === 'paused'
-        ? next(INITIAL_STATE, { message: 'AIR stopped. Camera is off.' })
+        ? next(INITIAL_STATE, { message: 'AIR stopped. Camera is off.', tracker: state.tracker })
         : state;
 
     case 'FPS': {
       const fps = Math.round(ev.fps);
       return state.phase === 'running' && fps !== state.fps ? next(state, { fps }) : state;
+    }
+
+    // The model stays loaded across Stop/Start, so tracker status is
+    // independent of the camera phase.
+    case 'TRACKER_LOADING':
+      return state.tracker === 'off' || state.tracker === 'unavailable'
+        ? next(state, { tracker: 'loading' })
+        : state;
+
+    case 'TRACKER_READY':
+      return state.tracker === 'ready' ? state : next(state, { tracker: 'ready' });
+
+    case 'TRACKER_FAILED':
+      return next(state, { tracker: 'unavailable', message: ev.message, ...NO_HAND,
+        podStatus: state.phase === 'running' ? 'READY' : state.podStatus });
+
+    case 'HAND': {
+      if (state.phase !== 'running') return state;
+      const present = ev.gesture !== null;
+      const gesture = ev.gesture ?? '';
+      const handConfidence = present ? Math.round(ev.confidence * 10) / 10 : 0;
+      const podStatus = present ? 'HAND' : 'READY';
+      if (present === state.handPresent && gesture === state.gesture &&
+          handConfidence === state.handConfidence && podStatus === state.podStatus) {
+        return state;
+      }
+      return next(state, { handPresent: present, gesture, handConfidence, podStatus });
     }
   }
 }

@@ -56,3 +56,51 @@ describe('airState', () => {
     expect(Object.isFrozen(run({ type: 'START_REQUESTED' }))).toBe(true);
   });
 });
+
+describe('airState: hand tracking', () => {
+  const running = run({ type: 'START_REQUESTED' }, { type: 'CAMERA_STARTED' });
+
+  it('tracker goes off → loading → ready and survives Stop', () => {
+    const loading = reduce(INITIAL_STATE, { type: 'TRACKER_LOADING' });
+    expect(loading.tracker).toBe('loading');
+    const ready = reduce(loading, { type: 'TRACKER_READY' });
+    expect(ready.tracker).toBe('ready');
+    const s = [{ type: 'START_REQUESTED' }, { type: 'CAMERA_STARTED' }, { type: 'STOPPED' }] as const;
+    expect(s.reduce(reduce, ready).tracker).toBe('ready');
+  });
+
+  it('a hand switches the Pod to HAND and shows the gesture', () => {
+    const s = reduce(running, { type: 'HAND', gesture: 'POINT', confidence: 0.93 });
+    expect(s.podStatus).toBe('HAND');
+    expect(s.handPresent).toBe(true);
+    expect(s.gesture).toBe('POINT');
+    expect(s.handConfidence).toBe(0.9);
+  });
+
+  it('losing the hand returns to READY', () => {
+    const s = reduce(reduce(running, { type: 'HAND', gesture: 'FIST', confidence: 1 }), { type: 'HAND', gesture: null, confidence: 0 });
+    expect(s.podStatus).toBe('READY');
+    expect(s.handPresent).toBe(false);
+    expect(s.gesture).toBe('');
+  });
+
+  it('repeated identical hand frames do not create new states', () => {
+    const a = reduce(running, { type: 'HAND', gesture: 'PEACE', confidence: 0.81 });
+    expect(reduce(a, { type: 'HAND', gesture: 'PEACE', confidence: 0.79 })).toBe(a);
+  });
+
+  it('hand events are ignored unless running; pausing clears the hand', () => {
+    expect(reduce(INITIAL_STATE, { type: 'HAND', gesture: 'FIST', confidence: 1 })).toBe(INITIAL_STATE);
+    const withHand = reduce(running, { type: 'HAND', gesture: 'FIST', confidence: 1 });
+    const paused = reduce(withHand, { type: 'TAB_HIDDEN' });
+    expect(paused.handPresent).toBe(false);
+    expect(paused.gesture).toBe('');
+  });
+
+  it('a tracker failure is explained and leaves the camera running', () => {
+    const s = reduce(running, { type: 'TRACKER_FAILED', message: 'nope' });
+    expect(s.tracker).toBe('unavailable');
+    expect(s.phase).toBe('running');
+    expect(s.message).toBe('nope');
+  });
+});
